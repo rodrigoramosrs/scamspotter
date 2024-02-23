@@ -1,4 +1,10 @@
-# ScamSpotter
+<p align="center">
+  <img src="./assets/ScamSpooterLogo.png" width="15%" />
+</p>
+
+
+## ScamSpotter
+
 
 ScamSpotter is a powerful tool designed to protect users from malicious and phishing websites. It works by scanning the web and identifying sites that are potentially harmful or are trying to impersonate legitimate businesses.
 

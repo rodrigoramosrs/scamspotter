@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ScamSpotter": {
+      "commandName": "Project",
+      "commandLineArgs": "watch --poolsize 50 --terms terms.txt --screenshot"
+    }
+  }
+}
