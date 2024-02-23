@@ -4,9 +4,11 @@ using ScamSpotter.Commands;
 using ScamSpotter.Infrastructure;
 using ScamSpotter.Services;
 using ScamSpotter.Services.OSINT;
+using ScamSpotter.Utils;
 using Serilog;
 using Spectre.Console;
 using Spectre.Console.Cli;
+using System.Diagnostics;
 using System.Reflection;
 
 namespace ScamSpotter
@@ -15,6 +17,7 @@ namespace ScamSpotter
     {
         static Task<int> Main(string[] args)
         {
+            AppDomain.CurrentDomain.ProcessExit += new EventHandler(CurrentDomain_ProcessExit);
             PrintHeader();
             AnsiConsole.MarkupLine("[green bold][[ {0}[/] [green]- v.[/] [green bold]{1} ]][/]", Markup.Escape("ScamSpotter"), Markup.Escape($"{typeof(Program).Assembly.GetName().Version}"));
 
@@ -71,6 +74,13 @@ namespace ScamSpotter
             string result = (string)renderMethod.Invoke(propertyValue, new object[] { "ScammSpotter", 0 });
 
             AnsiConsole.MarkupLine("[green]{0}[/]", Markup.Escape(result));
+
+        }
+
+        static void CurrentDomain_ProcessExit(object sender, EventArgs e)
+        {
+            var currentProcess = Process.GetCurrentProcess().Id;
+            ProcessUtil.KillChildProcess(currentProcess);
 
         }
     }

@@ -31,13 +31,12 @@ namespace ScamSpotter.Services
         WebDriverTypes _webDriverType = WebDriverTypes.ChromeDriver;
         static SemaphoreSlim semaphore = new SemaphoreSlim(10); // Allow 3 threads to access the resource concurrently
 
-        public ScreenshotService(ILogger<ScreenshotService> logger, WebDriverTypes webDriverType = WebDriverTypes.ChromeDriver)
+        public ScreenshotService(ILogger<ScreenshotService> logger)
         {
             _logger = logger;
             _manager = new DriverManager();
 
 
-            _webDriverType = webDriverType;
             IDriverConfig driverConfig = new IDriverConfig[] { new EdgeConfig(), new ChromeConfig(), new FirefoxConfig() }[(int)_webDriverType];
 
             _manager.SetUpDriver(driverConfig);

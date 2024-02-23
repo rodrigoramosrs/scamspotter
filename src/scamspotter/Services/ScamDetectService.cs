@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
+using ScamSpotter.Models.OSINT;
 using ScamSpotter.Services.OSINT;
 using ScamSpotter.Utils;
 using Spectre.Console;
@@ -75,7 +76,7 @@ namespace ScamSpotter.Services
                 {
                     lock (termsTask)
                     {
-                        if (termsTask.MaxValue != termsTotal)
+                        if (termsTask.MaxValue < termsTotal)
                             termsTask.MaxValue = termsTotal;
 
                         if (value > 0)
@@ -102,25 +103,41 @@ namespace ScamSpotter.Services
                         await Task.Delay(50);
                         var task = Task.Run(async () =>
                         {
+
                             try
                             {
                                 stepPoolSizeTask.Invoke(1);
-                                bool verify = !VerifyIfAlreadyScanned(result) && !result.common_name.Contains("*");
 
-                                if (verify)
+                                bool canContinue = !VerifyIfAlreadyScanned(result);
+                                if (canContinue)
                                 {
-                                    string url = $"https://{result.common_name}";
-                                    var whoisResult = await _whoIsService.QueryByDomain(result.common_name);
-                                    AppendOutput(result, whoisResult);
-
-                                    if (Global.GlobalSettings.SaveScreenshot)
+                                    var domainList = ExtractAllDomainFromCrtResult(result);
+                                    foreach (var domain in domainList)
                                     {
-                                        string rootFilename = UrlUtils.RemoveInvalidUriCharsFromUrl(url.Replace("https", string.Empty).Replace("http", string.Empty));
-                                        string OutputFilename = Path.Combine(Global.GlobalSettings.OutputScreenshotDirectory, $"{term}_{rootFilename}_{DateTime.Now.ToString("dd-MM-yyyy_HH-mm-ss")}.png");
-                                        await _screnshotService.OpenNewWindowAndTakeScreenshot($"{url}", Global.GlobalSettings.SaveScreenshot, OutputFilename);
+                                        string url = $"https://{domain}";
+                                        var whoisResult = await _whoIsService.QueryByDomain(result.common_name);
+
+                                        AppendOutput(result, whoisResult);
+
+                                        if (Global.GlobalSettings.SaveScreenshot)
+                                        {
+                                            string rootFilename = UrlUtils.RemoveInvalidUriCharsFromUrl(url.Replace("https", string.Empty).Replace("http", string.Empty));
+                                            string filenamePrefix = $"{term}_{rootFilename}";
+                                            string filenameSufix = $"{DateTime.Now.ToString("dd-MM-yyyy_HH-mm-ss")}.png";
+
+                                            //TAKING ONLY ONE SCREENSHOT BY DOMAIN
+                                            if(Directory.EnumerateFiles(Global.GlobalSettings.OutputScreenshotDirectory,$"*{rootFilename}*").Count() <= 0)
+                                            {
+                                                string OutputFilename = Path.Combine(Global.GlobalSettings.OutputScreenshotDirectory, $"{filenamePrefix}_{filenameSufix}");
+                                                await _screnshotService.OpenNewWindowAndTakeScreenshot($"{url}", Global.GlobalSettings.SaveScreenshot, OutputFilename);
+                                            }
+
+                                            
+                                        }
+
                                     }
-                                        
                                 }
+
                             }
                             catch (Exception ex)
                             {
@@ -134,7 +151,7 @@ namespace ScamSpotter.Services
                                 _semaphore.Release();
                             }
 
-                        
+
 
                         });
                         tasks.Add(task);
@@ -153,6 +170,18 @@ namespace ScamSpotter.Services
             });
 
 
+        }
+
+        private IEnumerable<string> ExtractAllDomainFromCrtResult(CrtShSearchResultModel cerModelResult)
+        {
+            var output = cerModelResult.name_value.Split("\n").ToList();
+
+            if (!output.Contains(cerModelResult.common_name))
+                output.Add(cerModelResult.common_name);
+
+            return output.Distinct()
+                .Where(x => !x.Contains("*"))
+                .Order();
         }
 
         static object Locker = new object();
@@ -175,7 +204,7 @@ namespace ScamSpotter.Services
                     File.WriteAllText(OutputFile, Header);
                 }
                 string Content = $"\"{param.id}\",\"{param.issuer_ca_id}\",\"{param.serial_number}\",\"{param.common_name}\",\"{param.name_value}\",\"{param.result_count}\",\"{param.entry_timestamp}\",\"{param.not_before}\",\"{param.not_after}\",\"{whoisResponse.OrganizationName}\"";
-                Content = Content.Replace(Environment.NewLine, string.Empty).Replace("\n",string.Empty);
+                Content = Content.Replace(Environment.NewLine, " ").Replace("\n", " ");
                 File.AppendAllText(OutputFile, $"{Content}\r\n");
             }
         }
