@@ -1,12 +1,17 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Newtonsoft.Json.Linq;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
+using OpenQA.Selenium.DevTools;
 using OpenQA.Selenium.Edge;
 using OpenQA.Selenium.Firefox;
 using OpenQA.Selenium.Support.UI;
+using ScamSpotter.Global;
+using ScamSpotter.Models.Webdriver;
 using ScamSpotter.Utils;
 using Spectre.Console;
+using System.Buffers.Text;
 using System.Text.RegularExpressions;
 using WebDriverManager;
 using WebDriverManager.DriverConfigs;
@@ -29,7 +34,7 @@ namespace ScamSpotter.Services
 
         private DriverManager _manager;
         WebDriverTypes _webDriverType = WebDriverTypes.ChromeDriver;
-        static SemaphoreSlim semaphore = new SemaphoreSlim(10); // Allow 3 threads to access the resource concurrently
+        private static SemaphoreSlim _Semaphore;
 
         public ScreenshotService(ILogger<ScreenshotService> logger)
         {
@@ -38,7 +43,7 @@ namespace ScamSpotter.Services
 
 
             IDriverConfig driverConfig = new IDriverConfig[] { new EdgeConfig(), new ChromeConfig(), new FirefoxConfig() }[(int)_webDriverType];
-
+            _Semaphore = new SemaphoreSlim(10);
             _manager.SetUpDriver(driverConfig);
             _driverOptions = BuildDriverOptions(_webDriverType);
             _driverService = BuildDriverService(_webDriverType);
@@ -120,34 +125,31 @@ namespace ScamSpotter.Services
             return webDriver;
         }
 
-        public async Task<byte[]> OpenNewWindowAndTakeScreenshot(string url, bool AutoSave, string OutputFilename)
+        internal async Task<PrintscreenOutput> OpenNewWindowAndTakeScreenshot(string url)
         {
-            semaphore.Wait();
-            byte[] output;
+            await _Semaphore.WaitAsync();
+            PrintscreenOutput result = new PrintscreenOutput();
             try
             {
                 using (var driver = BuildDriver(_webDriverType, _driverOptions, BuildDriverService(_webDriverType)))
                 {
-                    output = await Task.FromResult(InternalTakeScreenshot(url, AutoSave, OutputFilename, driver));
+                    result = await Task.FromResult(InternalTakeScreenshot(url, driver));
                     driver.Close();
-                    //_webDriver.Close();
                 }
             }
-            finally { semaphore.Release(); }
+            finally { _Semaphore.Release(); }
 
-
-
-            return output;
+            return result;
 
         }
 
-        public async Task<byte[]?> TakeScreenshot(string url, bool AutoSave = false, string OutputFilenam = "")
+        internal async Task<PrintscreenOutput?> TakeScreenshot(string url)
         {
-            var result = new byte[0];
+            PrintscreenOutput result = new PrintscreenOutput();
 
             try
             {
-                result = InternalTakeScreenshot(url, AutoSave, OutputFilenam, _webDriver);
+                result = InternalTakeScreenshot(url, _webDriver);
             }
             catch (Exception ex)
             {
@@ -159,39 +161,29 @@ namespace ScamSpotter.Services
         }
 
         private object screenshotLocker = new object();
-        private byte[] InternalTakeScreenshot(string url, bool AutoSave, string OutputFilename, IWebDriver webDriver)
+        private PrintscreenOutput InternalTakeScreenshot(string url, IWebDriver webDriver)
         {
-            byte[] result = new byte[0];
-
-            //webDriver.Navigate().GoToUrl(url);
+            PrintscreenOutput result = new PrintscreenOutput();
             try
             {
                 webDriver.Navigate().GoToUrl(url);
 
                 lock (screenshotLocker)
                 {
-                    Screenshot screenshot = ((ITakesScreenshot)webDriver).GetScreenshot();
-                    if (AutoSave)
+
+                    if (GlobalSettings.FullPageScreenshot)
                     {
-                        result = SaveScreenshot(url, screenshot, OutputFilename);
+                        result.screenshotSize = ScreenshotSizeTypes.FullPageSize;
+                        result.Screenshot = TakeFullPageScreenshot(webDriver);
                     }
+                    else
+                    {
+                        result.screenshotSize = ScreenshotSizeTypes.ScreenPageSize;
+                        Screenshot screenshot = ((ITakesScreenshot)webDriver).GetScreenshot();
+                        result.Screenshot = screenshot.AsByteArray;
+                    }
+
                 }
-
-                // Alterna de volta para a primeira aba
-                //webDriver.SwitchTo().Window(webDriver.WindowHandles[0]);
-
-
-                //var screenshot = (webDriver as ITakesScreenshot).GetScreenshot();
-
-                //if (AutoSave)
-                //{
-                //    string OutputScreeenshotFilePath = string.Empty;
-                //    lock (screenshotLogger)
-                //    {
-                //        result = SaveScreenshot(url, screenshot, out OutputScreeenshotFilePath);
-                //    }
-
-                //}/
             }
             catch (Exception ex)
             {
@@ -202,16 +194,27 @@ namespace ScamSpotter.Services
                 }
 
             }
-
-
+            result.SourceDriverRef = webDriver;
             return result;
         }
 
-
-        private byte[] SaveScreenshot(string url, Screenshot screenshot, string OutputFilename)
+        private byte[] TakeFullPageScreenshot(IWebDriver driver)
         {
-            screenshot.SaveAsFile(OutputFilename);
-            return screenshot.AsByteArray;
+            IDevTools devTools = driver as IDevTools;
+            using (var devToolsSession = devTools.GetDevToolsSession())
+            {
+                var commandResult = devToolsSession.SendCommand(
+                    "Page.captureScreenshot",
+                    new JObject
+                    {
+                        ["captureBeyondViewport"] = true
+                    })
+                    .GetAwaiter()
+                    .GetResult();
+
+                var data = commandResult["data"].ToString();
+                return Convert.FromBase64String(data);
+            }
         }
 
         public void Dispose()
@@ -219,6 +222,8 @@ namespace ScamSpotter.Services
             _webDriver.Close();
             _webDriver.Quit();
         }
+
+
     }
 }
 

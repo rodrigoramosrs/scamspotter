@@ -6,6 +6,7 @@
         public static int MaximumPoolSize { get; set; }
         internal static bool SaveScreenshot { get; set; }
         internal static string TermsFullFilePath { get; set; }
+        internal static bool FullPageScreenshot { get; set; } = true;
 
         static GlobalSettings()
         {

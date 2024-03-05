@@ -2,7 +2,7 @@
   "profiles": {
     "ScamSpotter": {
       "commandName": "Project",
-      "commandLineArgs": "watch --poolsize 50 --terms terms.txt --screenshot"
+      "commandLineArgs": "watch --poolsize 80 --terms terms.txt --screenshot"
     }
   }
 }

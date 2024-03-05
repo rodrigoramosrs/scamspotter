@@ -12,6 +12,13 @@ namespace ScamSpotter.Services
     public class ScamDetectService
     {
         private SemaphoreSlim _semaphore;
+        string _OutputCsvFilePath;
+        StringBuilder _LastFileContent;
+        object OutputFileLocker = new object();
+        private ILogger<ScamDetectService> _logger;
+        private CrtShService _crtService;
+        private ScreenshotService _screnshotService;
+        private WhoIsService _whoIsService;
 
         public ScamDetectService(ILogger<ScamDetectService> logger, CrtShService crtService, ScreenshotService screnshotService, WhoIsService whoIsService)
         {
@@ -20,7 +27,11 @@ namespace ScamSpotter.Services
             _crtService = crtService;
             _screnshotService = screnshotService;
             _whoIsService = whoIsService;
+            _LastFileContent = new StringBuilder();
 
+            _OutputCsvFilePath = Path.Combine(Global.GlobalSettings.OutputRootDirectory, "output.csv");
+            if (File.Exists(_OutputCsvFilePath))
+                _LastFileContent.AppendLine(File.ReadAllText(_OutputCsvFilePath));
         }
 
         public async Task StartDetection()
@@ -97,46 +108,46 @@ namespace ScamSpotter.Services
                     stepTermsProgressTask.Invoke(0, searchTermsResult.Count(), term);
                     foreach (var result in searchTermsResult)
                     {
-
-
                         await _semaphore.WaitAsync();
-                        await Task.Delay(50);
+
                         var task = Task.Run(async () =>
                         {
-
                             try
                             {
                                 stepPoolSizeTask.Invoke(1);
 
-                                bool canContinue = !VerifyIfAlreadyScanned(result);
-                                if (canContinue)
+                                bool alreadyScanned = VerifyIfAlreadyScanned(result.id.ToString());
+
+                                if (!alreadyScanned)
                                 {
                                     var domainList = ExtractAllDomainFromCrtResult(result);
                                     foreach (var domain in domainList)
                                     {
+                                        if (VerifyIfAlreadyScanned(domain)) continue;
+
                                         string url = $"https://{domain}";
+                                        string rootFilename = UrlUtils.RemoveInvalidUriCharsFromUrl(url.Replace("https", string.Empty).Replace("http", string.Empty));
+                                        string filenamePrefix = $"{term}_{rootFilename}";
+                                        string filenameSufix = $"{DateTime.Now.ToString("dd-MM-yyyy_HH-mm-ss")}.png";
+                                        string OutputFilename = Path.Combine(Global.GlobalSettings.OutputScreenshotDirectory, $"{filenamePrefix}_{filenameSufix}");
+
                                         var whoisResult = await _whoIsService.QueryByDomain(result.common_name);
 
                                         AppendOutput(result, whoisResult);
 
+                                        if (!Global.GlobalSettings.SaveScreenshot) continue;
+                                        //if (Directory.EnumerateFiles(Global.GlobalSettings.OutputScreenshotDirectory, $"*{filenamePrefix}*").Count() > 0) continue;
+
+                                        //TAKING ONLY ONE SCREENSHOT BY DOMAIN
+                                        var printscreen = await _screnshotService.OpenNewWindowAndTakeScreenshot($"{url}");
+
                                         if (Global.GlobalSettings.SaveScreenshot)
-                                        {
-                                            string rootFilename = UrlUtils.RemoveInvalidUriCharsFromUrl(url.Replace("https", string.Empty).Replace("http", string.Empty));
-                                            string filenamePrefix = $"{term}_{rootFilename}";
-                                            string filenameSufix = $"{DateTime.Now.ToString("dd-MM-yyyy_HH-mm-ss")}.png";
-
-                                            //TAKING ONLY ONE SCREENSHOT BY DOMAIN
-                                            if(Directory.EnumerateFiles(Global.GlobalSettings.OutputScreenshotDirectory,$"*{rootFilename}*").Count() <= 0)
-                                            {
-                                                string OutputFilename = Path.Combine(Global.GlobalSettings.OutputScreenshotDirectory, $"{filenamePrefix}_{filenameSufix}");
-                                                await _screnshotService.OpenNewWindowAndTakeScreenshot($"{url}", Global.GlobalSettings.SaveScreenshot, OutputFilename);
-                                            }
-
-                                            
-                                        }
+                                            File.WriteAllBytes(OutputFilename, printscreen.Screenshot);
 
                                     }
                                 }
+
+
 
                             }
                             catch (Exception ex)
@@ -145,7 +156,6 @@ namespace ScamSpotter.Services
                             }
                             finally
                             {
-
                                 stepPoolSizeTask.Invoke(-1);
                                 stepTermsProgressTask.Invoke(1, searchTermsResult.Count(), term);
                                 _semaphore.Release();
@@ -184,43 +194,33 @@ namespace ScamSpotter.Services
                 .Order();
         }
 
-        static object Locker = new object();
-        private ILogger<ScamDetectService> _logger;
-        private CrtShService _crtService;
-        private ScreenshotService _screnshotService;
-        private WhoIsService _whoIsService;
+        
 
         private void AppendOutput(Models.OSINT.CrtShSearchResultModel param, WhoisResponse whoisResponse)
         {
-
-            string OutputFilename = $"output.csv";
-            string OutputFile = Path.Combine(Global.GlobalSettings.OutputRootDirectory, OutputFilename);
-
-            lock (Locker)
+            lock (OutputFileLocker)
             {
-                if (!File.Exists(OutputFile))
+                if (!File.Exists(_OutputCsvFilePath))
                 {
-                    string Header = "id,issuer_ca_id,serial_number,common_name,name_value,result_count,entry_timestamp,not_before,not_after,org";
-                    File.WriteAllText(OutputFile, Header);
+                    string Header = "id,issuer_ca_id,serial_number,common_name,name_value,result_count,entry_timestamp,not_before,not_after,org\r\n";
+                    File.WriteAllText(_OutputCsvFilePath, Header);
                 }
                 string Content = $"\"{param.id}\",\"{param.issuer_ca_id}\",\"{param.serial_number}\",\"{param.common_name}\",\"{param.name_value}\",\"{param.result_count}\",\"{param.entry_timestamp}\",\"{param.not_before}\",\"{param.not_after}\",\"{whoisResponse.OrganizationName}\"";
                 Content = Content.Replace(Environment.NewLine, " ").Replace("\n", " ");
-                File.AppendAllText(OutputFile, $"{Content}\r\n");
+
+                _LastFileContent.AppendLine(Content);
+
+                File.AppendAllText(_OutputCsvFilePath, $"{Content}\r\n");
             }
         }
 
-        static string LastFileContent = string.Empty;
-        private bool VerifyIfAlreadyScanned(Models.OSINT.CrtShSearchResultModel param)
+
+        private bool VerifyIfAlreadyScanned(string IdOrUrl)
         {
-            if (!string.IsNullOrEmpty(LastFileContent))
-                return LastFileContent.Contains(param.id.ToString());
-
-            string OutputFilename = $"output.csv";
-            string OutputFile = Path.Combine(Global.GlobalSettings.OutputRootDirectory, OutputFilename);
-            if (!File.Exists(OutputFile)) return false;
-            LastFileContent = File.ReadAllText(OutputFile, Encoding.UTF8);
-
-            return LastFileContent.Contains(param.id.ToString());
+            lock (OutputFileLocker)
+            {
+                return _LastFileContent.ToString().Contains(IdOrUrl);
+            }
         }
     }
 }
